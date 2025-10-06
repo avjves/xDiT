@@ -7,6 +7,7 @@ import torch.distributed
 from torch.nn import functional as F
 from diffusers.utils import deprecate
 from diffusers.models.attention import Attention
+from diffusers.models.transformers.transformer_wan import WanAttention
 from diffusers.models.transformers.sana_transformer import SanaAttnProcessor2_0
 from diffusers.models.attention_processor import (
     AttnProcessor2_0,
@@ -16,6 +17,8 @@ from diffusers.models.attention_processor import (
     CogVideoXAttnProcessor2_0,
     SanaLinearAttnProcessor2_0,
 )
+
+from diffusers.models.transformers.transformer_wan import WanAttnProcessor
 
 try:
     from diffusers.models.transformers.transformer_hunyuan_video import (
@@ -146,6 +149,32 @@ class xFuserAttentionProcessorRegister:
             f"Attention Processor class {processor.__class__.__name__} is not supported by xFuser"
         )
 
+@xFuserAttentionProcessorRegister.register(WanAttnProcessor)
+class xFuserWanAttnProcessorWrapper(WanAttnProcessor):
+    pass
+
+@xFuserLayerWrappersRegister.register(WanAttention)
+class xFuserWanAttentionWrapper(xFuserAttentionBaseWrapper):
+    def __init__(
+            self,
+            attention: WanAttention,
+            ##TODO: LATTE?
+    ):
+        super().__init__(attention=attention)
+        self.processor = xFuserAttentionProcessorRegister.get_processor(
+            attention.processor
+        )()
+        ##TODO: LATTE TEMPORAL?
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        encoder_hidden_states: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        rotary_emb: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        **kwargs,
+    ) -> torch.Tensor:
+        return self.processor(self, hidden_states, encoder_hidden_states, attention_mask, rotary_emb, **kwargs)
 
 @xFuserLayerWrappersRegister.register(Attention)
 class xFuserAttentionWrapper(xFuserAttentionBaseWrapper):
@@ -222,7 +251,7 @@ class xFuserAttnProcessor2_0(AttnProcessor2_0):
             HAS_LONG_CTX_ATTN
             and use_long_ctx_attn_kvcache
             and get_sequence_parallel_world_size() > 1
-        )      
+        )
         set_hybrid_seq_parallel_attn(self, self.use_long_ctx_attn_kvcache)
 
         if get_fast_attn_enable():
@@ -450,7 +479,7 @@ class xFuserJointAttnProcessor2_0(JointAttnProcessor2_0):
         query = attn.to_q(hidden_states)
         key = attn.to_k(hidden_states)
         value = attn.to_v(hidden_states)
-        
+
         inner_dim = key.shape[-1]
         head_dim = inner_dim // attn.heads
 
@@ -1510,7 +1539,7 @@ else:
 class xFuserSanaAttnProcessor2_0(SanaAttnProcessor2_0):
     def __init__(self):
         super().__init__()
-    
+
     def __call__(
         self,
         attn: Attention,
@@ -1627,7 +1656,7 @@ class xFuserSanaLinearAttnProcessor2_0(SanaLinearAttnProcessor2_0):
 
         if encoder_hidden_states is None:
             encoder_hidden_states = hidden_states
-            
+
         batch_size = encoder_hidden_states.size(0)
 
         query = attn.to_q(hidden_states)
@@ -1638,7 +1667,7 @@ class xFuserSanaLinearAttnProcessor2_0(SanaLinearAttnProcessor2_0):
             query = attn.norm_q(query)
         if attn.norm_k is not None:
             key = attn.norm_k(key)
-            
+
         inner_dim = key.shape[-1]
         head_dim = inner_dim // attn.heads
 
