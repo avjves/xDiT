@@ -19,5 +19,5 @@ __all__ = [
     "xFuserCogVideoXTransformer3DWrapper",
     "xFuserHunyuanDiT2DWrapper",
     "xFuserConsisIDTransformer3DWrapper",
-    "xFuserSanaTransformer2DWrapper"
+    "xFuserSanaTransformer2DWrapper",
 ]
