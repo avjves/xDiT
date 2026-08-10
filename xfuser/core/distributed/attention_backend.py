@@ -19,6 +19,11 @@ from xfuser.core.sparge_attention.sparge import (
     mask_padded_kv_blocks,
 )
 from xfuser.core.sparge_attention.head_balance import COST_SINK_KEY
+from xfuser.core.liteattention import (
+    LITE_LAYER_KEY,
+    get_lite_attention,
+    resolve_lite_config,
+)
 from xfuser.logger import init_logger
 
 logger = init_logger(__name__)
@@ -499,6 +504,8 @@ if env_info["has_aiter"]:
 
     except ImportError:
         pass
+if env_info["has_moonmath_attention"]:
+    from moonmath_attention import forward as moonmath_forward
 if env_info["has_flash_attn"]:
     from flash_attn import flash_attn_func as flash_attn_func_2
     from flash_attn import flash_attn_varlen_func as flash_attn_varlen_func_2
@@ -552,6 +559,7 @@ class AttentionBackendType(Enum):
     FLEX_BLOCK_SPARGE = "Flex Block Sparge"
     AITER_FLYDSL = "AITER FlyDSL"
     AITER_FLYDSL_FP8 = "AITER FlyDSL FP8"
+    LITEATTENTION_ROCM = "LiteAttention ROCm"
     NPU = "NPU"
 
 def register_attention_function(backend_type):
@@ -1535,3 +1543,90 @@ def _aiter_flydsl_fp8_attn_call(query, key, value, dropout_p, is_causal, attenti
     return _aiter_flydsl_dispatch(
         query, key, value, dropout_p, is_causal, attention_kwargs, torch.ops.xfuser.flydsl_attn_fp8
     )
+
+
+_LITEATTENTION_HEAD_DIM = 128
+
+# Attn shape is constant across denoise steps, so log the chosen path once per shape.
+_liteattention_logged = set()
+
+
+def _liteattention_log_once(key_t, msg):
+    if key_t in _liteattention_logged:
+        return
+    _liteattention_logged.add(key_t)
+    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+        logger.info(msg)
+
+
+def _liteattention_reject_reason(query, key, value, dropout_p, is_causal):
+    """Why the moonmath kernel cannot serve this call, or None if it can.
+
+    The kernel is bf16 non-causal MHA at head_dim 128 with the 1/sqrt(D) scale
+    baked in; Q and K/V sequence lengths are free.
+    """
+    if is_causal:
+        return "causal masking"
+    if dropout_p:
+        return "attention dropout"
+    if query.dtype != torch.bfloat16:
+        return f"dtype {query.dtype}"
+    if query.shape[3] != _LITEATTENTION_HEAD_DIM:
+        return f"head_dim {query.shape[3]}"
+    if key.shape[3] != query.shape[3] or value.shape[3] != query.shape[3]:
+        return "mismatched Q/K/V head dims"
+    if key.shape[1] != query.shape[1] or value.shape[1] != query.shape[1]:
+        return f"GQA (num_heads {query.shape[1]}, num_kv_heads {key.shape[1]})"
+    return None
+
+
+@register_attention_function(AttentionBackendType.LITEATTENTION_ROCM)
+@torch.compiler.disable
+def _liteattention_rocm_attn_call(query, key, value, dropout_p, is_causal, attention_kwargs=None):
+    """LiteAttention: the hand-tuned moonmath bf16 kernel for AMD MI300X (gfx942).
+
+    Tensors arrive as [B, H, S, D] and the kernel consumes that layout natively,
+    so the only preparation is the contiguity its ctypes wrapper requires.
+    Self-attention calls that carry a per-layer handle take the stateful skip
+    kernel, which reuses the previous denoising step's vote to avoid loading
+    K-blocks that contributed nothing. Everything else -- cross-attention, the
+    first step, models that pass no handle -- runs the exact dense forward.
+    """
+    if query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
+        raise ValueError(
+            "liteattention_rocm expects 4D [B, H, S, D] tensors, got "
+            f"{query.dim()}D/{key.dim()}D/{value.dim()}D"
+        )
+
+    reason = _liteattention_reject_reason(query, key, value, dropout_p, is_causal)
+    if reason is not None:
+        _liteattention_log_once(
+            (tuple(query.shape), tuple(key.shape), query.dtype, is_causal),
+            f"liteattention_rocm cannot serve {reason}; falling back to sdpa_flash",
+        )
+        return _sdpa_flash_attn_call(query, key, value, dropout_p, is_causal, attention_kwargs)
+
+    query = query.contiguous()
+    key = key.contiguous()
+    value = value.contiguous()
+
+    config = resolve_lite_config()
+    layer = (attention_kwargs or {}).get(LITE_LAYER_KEY)
+    if layer is None:
+        _liteattention_log_once(
+            (tuple(query.shape), tuple(key.shape), "exact"),
+            f"liteattention_rocm [B{query.shape[0]} H{query.shape[1]} "
+            f"Sq{query.shape[2]} Skv{key.shape[2]}] -> exact forward",
+        )
+        output = moonmath_forward(
+            query, key, value, layout="bhsd", round_mode=config.round_mode
+        )
+        return output, None
+
+    _liteattention_log_once(
+        (tuple(query.shape), tuple(key.shape), "skip"),
+        f"liteattention_rocm [B{query.shape[0]} H{query.shape[1]} "
+        f"Sq{query.shape[2]} Skv{key.shape[2]}] -> skip kernel "
+        f"(threshold={config.threshold}, skipping={config.enable_skipping})",
+    )
+    return get_lite_attention(layer, config)(query, key, value), None

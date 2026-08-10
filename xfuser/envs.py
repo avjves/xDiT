@@ -208,6 +208,7 @@ class PackagesEnvChecker:
         packages_info["has_flash_attn_4"] = self._check_flash_attn_4()
         packages_info["has_flash_attn_4_fp4"] = self._check_flash_attn_4_fp4()
         packages_info["has_transformer_engine"] = self.check_transformer_engine()
+        packages_info["has_moonmath_attention"] = self._check_moonmath_attention()
         packages_info["has_sage"] = self._check_sage()
         packages_info["has_flex_block_attn"] = self._check_flex_block_attn()
         packages_info["has_long_ctx_attn"] = self.check_long_ctx_attn()
@@ -326,6 +327,21 @@ class PackagesEnvChecker:
         except ImportError:
             return False
 
+    def _check_moonmath_attention(self):
+        """
+        Checks whether the moonmath_attention (LiteAttention) kernel is installed.
+        It is hand-tuned for CDNA3 and only builds and runs on gfx942.
+        """
+        if not torch.cuda.is_available() or not _is_hip():
+            return False
+        if not self._on_gfx942():
+            return False
+        try:
+            import moonmath_attention
+            return True
+        except ImportError:
+            return False
+
     def _check_sage(self):
         try:
             from sageattention import sageattn
@@ -394,6 +410,11 @@ class PackagesEnvChecker:
         device = torch.cuda.current_device()
         gcn_arch_name = torch.cuda.get_device_properties(device).gcnArchName
         return any(arch in gcn_arch_name for arch in ["gfx950", "gfx942"])
+
+    def _on_gfx942(self):
+        device = torch.cuda.current_device()
+        gcn_arch_name = torch.cuda.get_device_properties(device).gcnArchName
+        return "gfx942" in gcn_arch_name
 
     def _on_rdna4(self):
         device = torch.cuda.current_device()

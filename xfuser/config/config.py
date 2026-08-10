@@ -80,6 +80,9 @@ class RuntimeConfig:
     use_vsa_static_block_mask: bool = True
     use_vsa_first_frame_mask: bool = True
     vsa_collect_density: bool = False
+    lite_threshold: float = -6.0
+    lite_round_mode: str = "rtz"
+    disable_lite_skip: bool = False
 
     def __post_init__(self):
         check_packages()

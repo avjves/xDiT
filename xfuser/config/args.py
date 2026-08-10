@@ -187,6 +187,10 @@ class xFuserArgs:
     use_vsa_static_block_mask: bool = True
     use_vsa_first_frame_mask: bool = True
     vsa_collect_density: bool = False
+    # LiteAttention (moonmath) attention
+    lite_threshold: float = -6.0
+    lite_round_mode: str = "rtz"
+    disable_lite_skip: bool = False
     # Distilled model weight paths
     distilled_transformer_path: Optional[str] = None
     distilled_transformer_2_path: Optional[str] = None
@@ -880,6 +884,28 @@ class xFuserArgs:
             help="Record the selected VSA block density for profiling.",
         )
         parser.add_argument(
+            "--lite_threshold",
+            type=float,
+            default=-6.0,
+            help="LiteAttention skip threshold in log2 units (must be negative). "
+                 "A K-block is skipped next denoising step when its max score "
+                 "stayed this far below the running softmax max for every q-row. "
+                 "More negative means fewer skips.",
+        )
+        parser.add_argument(
+            "--lite_round_mode",
+            type=str,
+            default="rtz",
+            choices=["rtna", "rtne", "rtz"],
+            help="bf16 rounding mode for the LiteAttention kernel.",
+        )
+        parser.add_argument(
+            "--disable_lite_skip",
+            action="store_true",
+            help="Run LiteAttention as exact dense attention, without the "
+                 "cross-step skip optimization. Useful for A/B quality checks.",
+        )
+        parser.add_argument(
             "--distilled_transformer_path",
             type=nullable_str,
             default=None,
@@ -992,6 +1018,9 @@ class xFuserArgs:
             use_vsa_static_block_mask=self.use_vsa_static_block_mask,
             use_vsa_first_frame_mask=self.use_vsa_first_frame_mask,
             vsa_collect_density=self.vsa_collect_density,
+            lite_threshold=self.lite_threshold,
+            lite_round_mode=self.lite_round_mode,
+            disable_lite_skip=self.disable_lite_skip,
         )
 
         parallel_config = ParallelConfig(

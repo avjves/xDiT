@@ -26,6 +26,7 @@ if envs._is_npu():
 
 from xfuser.core.distributed.attention_backend import AttentionBackendType
 from xfuser.core.distributed.attention_schedule import AttentionSchedule, GemmPrecisionSchedule
+from xfuser.core.liteattention import LiteAttentionConfig, validate_lite_config
 from xfuser.config.config import (
     ParallelConfig,
     RuntimeConfig,
@@ -228,6 +229,7 @@ class RuntimeState(metaclass=ABCMeta):
                                  AttentionBackendType.AITER_VSA,
                                  AttentionBackendType.AITER_FLYDSL,
                                  AttentionBackendType.AITER_FLYDSL_FP8,
+                                 AttentionBackendType.LITEATTENTION_ROCM,
                                  AttentionBackendType.FLEX_BLOCK_ATTN,
                                  AttentionBackendType.FLEX_BLOCK_SPARGE]:
             if self.parallel_config.ring_degree > 1:
@@ -341,6 +343,19 @@ class RuntimeState(metaclass=ABCMeta):
                 from aiter.ops.flydsl import flydsl_flash_attn_func, flydsl_fp8_quant
             except ImportError:
                 raise RuntimeError("AITER FlyDSL FP8 attention is not available, please update AITER") from None
+        elif attention_backend == AttentionBackendType.LITEATTENTION_ROCM:
+            if not env_info["has_moonmath_attention"]:
+                raise RuntimeError(
+                    "LiteAttention is not available. It needs the moonmath_attention "
+                    "package (https://github.com/moonmath-ai/amd-kernels) and an AMD "
+                    "gfx942 (MI300X / MI325X) GPU."
+                )
+            validate_lite_config(
+                LiteAttentionConfig(
+                    threshold=self.runtime_config.lite_threshold,
+                    round_mode=self.runtime_config.lite_round_mode,
+                )
+            )
         elif attention_backend in (AttentionBackendType.FLEX_BLOCK_ATTN,
                                    AttentionBackendType.FLEX_BLOCK_SPARGE):
             if not env_info["has_flex_block_attn"]:

@@ -49,6 +49,7 @@ from xfuser.core.distributed import (
 )
 from xfuser.core.distributed.attention_backend import AttentionBackendType
 from xfuser.core.distributed.attention_schedule import AttentionSchedule, create_hybrid_attn_schedule, create_hybrid_gemm_schedule
+from xfuser.core.liteattention import reset_lite_attention_state
 
 
 packages_info = PACKAGES_CHECKER.get_packages_info()
@@ -684,6 +685,9 @@ class xFuserModel(abc.ABC):
     def _run_timed_pipe(self, input_args: dict) -> Tuple[DiffusionOutput, float]:
         """ Run a a full pipeline with timing information """
 
+        # LiteAttention's skips are monotonic within a run, so the list learned
+        # for the previous prompt must not leak into this one.
+        reset_lite_attention_state()
         self._prepare_inference_run(input_args)
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)

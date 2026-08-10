@@ -283,6 +283,7 @@ Several different attention backends are supported:
 | [AITER MLA](https://github.com/rocm/aiter) | aiter_mla |
 | [AITER FlyDSL](https://github.com/rocm/aiter) | aiter_flydsl |
 | [AITER FlyDSL FP8](https://github.com/rocm/aiter) | aiter_flydsl_fp8 |
+| [LiteAttention](https://github.com/moonmath-ai/amd-kernels) | liteattention_rocm |
 
 xDiT comes with `flash_attn` as an optional install requirement, as it currently supports the largest variety of different GPU architectures.
 However, newer implementations generally offer better performance. If available for you, we highly recommend using `cuDNN`, `FAv3`, `FAv3 FP8` (on _hopper_ GPUs) or `FAv4`, `Transformer engine FP8` (on _blackwell_ GPUs).

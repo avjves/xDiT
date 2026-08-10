@@ -76,7 +76,7 @@ class xFuserMiniMaxH3AttnProcessor(MiniMaxH3AttnProcessor):
             "dropout_p": 0.0,
             "is_causal": False,
             "attention_kwargs": self.attention_kwargs,
-            "head_balance_layer": attn,
+            "layer_handle": attn,
             "backend": self.backend,
         }
         if use_ulysses:

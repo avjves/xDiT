@@ -147,7 +147,7 @@ class xFuserWanAttnProcessor(WanAttnProcessor):
             value.transpose(1, 2),
             backend=backend,
             attention_kwargs=self.attention_kwargs,
-            head_balance_layer=attn,
+            layer_handle=attn,
         ).transpose(1, 2)
 
         hidden_states = hidden_states.flatten(2, 3)

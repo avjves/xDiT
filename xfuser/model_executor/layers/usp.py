@@ -27,6 +27,7 @@ from xfuser.core.distributed.attention_backend import (
     ATTENTION_FUNCTION_REGISTRY,
     AttentionBackendType,
 )
+from xfuser.core.liteattention import LITE_LAYER_KEY
 from xfuser.core.sparge_attention.head_balance import (
     apply_head_balance,
     revert_head_balance,
@@ -41,6 +42,22 @@ _HEAD_BALANCE_BACKENDS = frozenset({
     AttentionBackendType.AITER_SPARGE_V2,
     AttentionBackendType.FLEX_BLOCK_SPARGE,
 })
+
+
+def _publish_lite_layer(attention_kwargs, layer_handle, backend):
+    """Hand the LiteAttention backend a stable handle for the calling layer.
+
+    LiteAttention carries a skip list from one denoising step to the next, and
+    that list belongs to a single layer. Without a handle the backend has no way
+    to tell layers apart, so it runs exact attention instead.
+    """
+    if layer_handle is None:
+        return attention_kwargs
+    if backend is None:
+        backend = get_runtime_state().attention_backend
+    if backend != AttentionBackendType.LITEATTENTION_ROCM:
+        return attention_kwargs
+    return {**(attention_kwargs or {}), LITE_LAYER_KEY: layer_handle}
 
 
 def ring_attn(attention_function, query, key, value, dropout_p=0.0, is_causal=False, joint_attn_kwargs=None, attention_kwargs=None):
@@ -258,19 +275,21 @@ def USP(
         combine_qkv_a2a: bool | None = None,
         backend=None,
         attention_kwargs: dict | None = None,
-        head_balance_layer=None,
+        layer_handle=None,
     ):
     """
     Unified Sequence Parallelism (USP) attention call, supporting combinations of Ulysses and
     Ring attention. Also supports joint tensors and key-value caching for pipeline parallelism.
     Explicit backend can be provided to specify the attention backend to use.
 
-    ``head_balance_layer`` (optional): a stable per-layer handle (e.g. the
-    attention module). When provided and --use_spargeattn_head_balance is set, the
-    Ulysses head dimension is permuted so each rank gets a cost-balanced subset
-    of heads (block-sparse load balancing); the permutation is inverted on the
-    output. No-op for non-sparse backends (no cost is published) and for ring/
-    joint paths.
+    ``layer_handle`` (optional): a stable per-layer handle (e.g. the attention
+    module), used by anything that keeps state for one layer across denoising
+    steps. With --use_spargeattn_head_balance it carries the head permutation
+    buffer, so the Ulysses head dimension is permuted to give each rank a
+    cost-balanced subset of heads (block-sparse load balancing) and the
+    permutation is inverted on the output; that is a no-op for non-sparse
+    backends (no cost is published) and for ring/joint paths. The
+    ``liteattention_rocm`` backend uses it to find this layer's skip list.
     """
     if combine_qkv_a2a is None:
         combine_qkv_a2a = False
@@ -280,7 +299,7 @@ def USP(
     hb_uly = get_ulysses_parallel_world_size()
     hb_backend = backend if backend is not None else get_runtime_state().attention_backend
     query, key, value, hb_applied, attention_kwargs = apply_head_balance(
-        query, key, value, head_balance_layer,
+        query, key, value, layer_handle,
         enabled=get_runtime_state().runtime_config.use_spargeattn_head_balance,
         ulysses_world_size=hb_uly,
         ring_world_size=get_ring_parallel_world_size(),
@@ -288,6 +307,7 @@ def USP(
         joint_strategy=joint_strategy,
         attention_kwargs=attention_kwargs,
     )
+    attention_kwargs = _publish_lite_layer(attention_kwargs, layer_handle, hb_backend)
 
     joint_attn_kwargs = None
     if joint_strategy:
@@ -355,7 +375,7 @@ def USP(
             # Restore global head order on the output, gather this step's per-head
             # costs across the Ulysses group, and plan next step's permutation.
             out = revert_head_balance(
-                out, attention_kwargs, head_balance_layer, hb_uly
+                out, attention_kwargs, layer_handle, hb_uly
             )
 
     return out
@@ -369,18 +389,19 @@ def attention(
         is_causal: bool = False,
         backend=None,
         attention_kwargs=None,
-        head_balance_layer=None,
+        layer_handle=None,
     ):
     """
     Runs attention call without any parallelism.
     This can be used when the logic necessitates no Ulysses or Ring parallelism in any case.
     Explicit backend can be provided to specify the attention backend to use.
 
-    ``head_balance_layer`` is accepted for call-site signature parity with
-    ``USP`` but ignored here: with no Ulysses parallelism there is no head
-    sharding to balance.
+    ``layer_handle`` is not used for head balancing here -- with no Ulysses
+    parallelism there is no head sharding to balance -- but it is still passed
+    to backends that keep per-layer state, such as ``liteattention_rocm``.
     """
     attention_function = _get_attention_function(backend=backend)
+    attention_kwargs = _publish_lite_layer(attention_kwargs, layer_handle, backend)
     out, _ = attention_function(
         query,
         key,
